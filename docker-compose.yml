@@ -1,0 +1,85 @@
+services:
+  td-connector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: connector-td-engine:latest
+    container_name: td-connector
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # Panel web de monitorización (WEB_UI_ENABLED).
+      # En producción con nginx delante usa "127.0.0.1:3892:3892" para no exponerlo
+      # directamente. Sin proxy, deja "3892:3892" para acceso directo a la IP del servidor.
+      - "3892:3892"
+    volumes:
+      - td-connector-state:/app/state
+      # Para editar la lista de tags sin reconstruir la imagen, descomenta:
+      # - ./config/tags.txt:/app/config/tags.txt:ro
+      # Para cambiar el logo del panel sin reconstruir la imagen, descomenta:
+      # - ./assets:/app/assets:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "python", "/app/src/healthcheck.py"]
+      interval: 60s
+      timeout: 15s
+      # Tiempo que se le da al contenedor para que escriba el primer heartbeat antes de
+      # empezar a evaluar el healthcheck. El ciclo inicial puede tardar si hay muchos grupos.
+      start_period: 90s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+        reservations:
+          memory: 128m
+    # Etiqueta requerida por el servicio autoheal para saber qué contenedores reiniciar.
+    labels:
+      autoheal: "true"
+
+  # autoheal: reinicia automáticamente los contenedores que pasen a "unhealthy".
+  # Sin este servicio, Docker solo marca el contenedor como unhealthy pero NO lo reinicia.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: td-connector-autoheal
+    restart: unless-stopped
+    environment:
+      # Solo actúa sobre contenedores con la etiqueta autoheal=true
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      # Revisa el estado de los contenedores cada 10 segundos
+      AUTOHEAL_INTERVAL: "10"
+      # Espera 90 s antes de empezar a reiniciar (igual que start_period del healthcheck)
+      AUTOHEAL_START_PERIOD: "90"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # Watchtower: actualiza el contenedor automáticamente cuando publicas una nueva imagen
+  # en el registry. Descomenta si usas Docker Hub, GHCR u otro registry.
+  #
+  # Flujo recomendado:
+  #   1. Push de código → GitHub Actions construye y sube la imagen al registry
+  #   2. Watchtower detecta la nueva imagen (cada WATCHTOWER_POLL_INTERVAL segundos)
+  #   3. Watchtower para el contenedor, descarga la imagen nueva y lo reinicia
+  #
+  # watchtower:
+  #   image: containrrr/watchtower:latest
+  #   container_name: td-connector-watchtower
+  #   restart: unless-stopped
+  #   environment:
+  #     WATCHTOWER_CLEANUP: "true"            # elimina imágenes antiguas tras actualizar
+  #     WATCHTOWER_POLL_INTERVAL: "300"       # revisa el registry cada 5 minutos
+  #     WATCHTOWER_LABEL_ENABLE: "true"       # solo actualiza contenedores con etiqueta
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   # Si usas un registry privado, añade aquí las credenciales:
+  #   # environment:
+  #   #   REPO_USER: tu_usuario
+  #   #   REPO_PASS: tu_token
+
+volumes:
+  td-connector-state:
