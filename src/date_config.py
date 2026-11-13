@@ -14,7 +14,7 @@ _MADRID_TZ = ZoneInfo("Europe/Madrid")
 
 @dataclass
 class DateRangeConfig:
-    mode: str = "shift_yesterday"   # shift_yesterday | shift_date | range
+    mode: str = "shift_yesterday"   # shift_yesterday | turno_diario | shift_date | range | all_time
     shift_date: Optional[str] = None   # "YYYY-MM-DD"
     range_start: Optional[str] = None  # "YYYY-MM-DDTHH:MM"
     range_end: Optional[str] = None    # "YYYY-MM-DDTHH:MM"
@@ -22,9 +22,14 @@ class DateRangeConfig:
     def resolve(self) -> Tuple[datetime, datetime]:
         """Devuelve (inicio, fin) en UTC."""
         if self.mode == "shift_yesterday":
-            # TODAY()-15h a TODAY()+9h — equivalente al ventana original del conector
-            midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            return midnight - timedelta(hours=15), midnight + timedelta(hours=9)
+            # Desde medianoche UTC −15h hasta la hora completa actual (mínimo midnight+9h).
+            # Con syncado horario, el fin avanza cada hora para incluir datos recientes.
+            now = datetime.now(timezone.utc)
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            fixed_end = midnight + timedelta(hours=9)
+            current_hour = now.replace(minute=0, second=0, microsecond=0)
+            end = current_hour if current_hour > fixed_end else fixed_end
+            return midnight - timedelta(hours=15), end
 
         if self.mode == "turno_diario":
             # Turno de 24h: ayer 21:00 Madrid → hoy 21:00 Madrid.
@@ -53,17 +58,27 @@ class DateRangeConfig:
                 raise ValueError("range_end debe ser posterior a range_start")
             return start, end
 
+        if self.mode == "all_time":
+            # Desde el origen del proyecto hasta la hora completa actual.
+            # Para horómetros (LAST): sincroniza todos los días cada ciclo.
+            now = datetime.now(timezone.utc)
+            end = now.replace(minute=0, second=0, microsecond=0)
+            start = datetime(2020, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+            return start, end
+
         raise ValueError(f"Modo desconocido: {self.mode!r}")
 
     def describe(self) -> str:
         if self.mode == "shift_yesterday":
-            return "Ventana diaria (hoy -15h → +9h)"
+            return "Ventana diaria (medianoche −15h → hora actual)"
         if self.mode == "turno_diario":
             return "Turno diario automático (ayer 21:00 → hoy 21:00)"
         if self.mode == "shift_date":
             return f"Turno del {self.shift_date}"
         if self.mode == "range":
             return f"{self.range_start} → {self.range_end}"
+        if self.mode == "all_time":
+            return "Histórico completo (2020-01-01 → hora actual)"
         return self.mode
 
 

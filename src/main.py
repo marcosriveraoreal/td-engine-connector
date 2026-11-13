@@ -108,7 +108,11 @@ def sync_group(
     tracker: RunTracker,
     heartbeat_file: str,
     notif: NotificationConfig | None = None,
+    dry_run: bool = False,
 ) -> None:
+    if dry_run:
+        log.warning("[%s] DRY_RUN=true — ejecución bloqueada, no se escribe en BD.", group.name)
+        return
     tracker.set_running(group.id, True)
     started_at = datetime.now(timezone.utc)
     try:
@@ -120,13 +124,13 @@ def sync_group(
             sql_client.upsert_hourly_averages(rows, group.target_table)
             row_count = len(rows)
             received = {r.tagname for r in rows}
+            missing = sorted(set(group.tags) - received) if group.tags else []
         else:
-            rows = td_client.fetch_hourly_last(start, end, group.tags)
+            rows = td_client.fetch_hourly_last(start, end, group.tags or None, group.tbname_pattern)
             sql_client.upsert_horometros(rows, group.target_table)
             row_count = len(rows)
             received = {r.tagname for r in rows}
-
-        missing = sorted(set(group.tags) - received) if group.tags else []
+            missing = sorted(set(group.tags) - received) if group.tags else []
         if missing:
             log.warning("[%s] %d tag(s) sin datos: %s", group.name, len(missing), ", ".join(missing))
 
@@ -184,10 +188,16 @@ def _run_loop(
     manual_queue: queue.Queue,
 ) -> None:
     notif = config.notification
-    # Ciclo inicial al arrancar para todos los grupos habilitados
-    for group in group_store.list():
-        if group.enabled:
-            sync_group(td_client, sql_client, group, "startup", tracker, config.heartbeat_file, notif)
+    dry_run = config.dry_run
+    if dry_run:
+        log.warning("DRY_RUN=true — ninguna ejecución escribirá en la base de datos.")
+
+    if config.sync_on_startup and not dry_run:
+        for group in group_store.list():
+            if group.enabled:
+                sync_group(td_client, sql_client, group, "startup", tracker, config.heartbeat_file, notif)
+    elif not dry_run:
+        log.info("SYNC_ON_STARTUP=false — se omite la sincronización inicial.")
 
     # Inicializar next_run por grupo
     next_runs: Dict[str, datetime] = {}
@@ -207,7 +217,7 @@ def _run_loop(
                 break
             group = group_store.get(group_id)
             if group and group.enabled:
-                sync_group(td_client, sql_client, group, "manual", tracker, config.heartbeat_file, notif)
+                sync_group(td_client, sql_client, group, "manual", tracker, config.heartbeat_file, notif, dry_run=dry_run)
                 next_runs[group_id] = compute_next_run(group.schedule, datetime.now(timezone.utc))
                 tracker.set_next_run(group_id, next_runs[group_id])
 
@@ -232,7 +242,7 @@ def _run_loop(
             if due_at <= now:
                 group = current_groups.get(gid)
                 if group:
-                    sync_group(td_client, sql_client, group, "scheduled", tracker, config.heartbeat_file, notif)
+                    sync_group(td_client, sql_client, group, "scheduled", tracker, config.heartbeat_file, notif, dry_run=dry_run)
                     next_runs[gid] = compute_next_run(group.schedule, datetime.now(timezone.utc))
                     tracker.set_next_run(gid, next_runs[gid])
 
@@ -249,7 +259,7 @@ def main() -> int:
     tracker = RunTracker(max_runs=config.web_ui.max_runs_history)
     log_buffer = LogBufferHandler(capacity=config.web_ui.max_log_lines)
     setup_logging(config.log_level, extra_handler=log_buffer)
-    log.info("Iniciando connector-td-engine (run_once=%s)", config.run_once)
+    log.info("Iniciando connector-td-engine (run_once=%s, dry_run=%s)", config.run_once, config.dry_run)
 
     if config.web_ui.password_generated:
         log.warning(
@@ -277,7 +287,7 @@ def main() -> int:
         if config.run_once:
             for group in group_store.list():
                 if group.enabled:
-                    sync_group(td_client, sql_client, group, "startup", tracker, config.heartbeat_file, config.notification)
+                    sync_group(td_client, sql_client, group, "startup", tracker, config.heartbeat_file, config.notification, dry_run=config.dry_run)
             failed = any(not r.is_ok for r in tracker.snapshot())
             return 1 if failed else 0
 

@@ -31,6 +31,7 @@ class GroupConfig:
     schedule: ScheduleConfig
     date_range: DateRangeConfig
     enabled: bool = True
+    tbname_pattern: Optional[str] = None  # si se define, los tags se descubren dinámicamente
 
     def to_dict(self) -> dict:
         return {
@@ -39,6 +40,7 @@ class GroupConfig:
             "agg_type": self.agg_type,
             "target_table": self.target_table,
             "tags": self.tags,
+            "tbname_pattern": self.tbname_pattern,
             "schedule": self.schedule.to_dict(),
             "date_range": {
                 "mode": self.date_range.mode,
@@ -58,6 +60,7 @@ class GroupConfig:
             agg_type=d.get("agg_type", "twa"),
             target_table=d.get("target_table", ""),
             tags=d.get("tags", []),
+            tbname_pattern=d.get("tbname_pattern") or None,
             schedule=ScheduleConfig.from_dict(d.get("schedule", {})),
             date_range=DateRangeConfig(
                 mode=dr.get("mode", "shift_yesterday"),

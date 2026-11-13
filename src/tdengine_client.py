@@ -103,14 +103,21 @@ class TDengineClient:
         wait=wait_exponential(multiplier=1, min=1, max=30),
         retry=retry_if_exception_type((requests.RequestException, TDengineError)),
     )
-    def fetch_hourly_last(self, start: datetime, end: datetime, tags: List[str]) -> List[HourlyLastRow]:
+    def fetch_hourly_last(
+        self,
+        start: datetime,
+        end: datetime,
+        tags: Optional[List[str]] = None,
+        tbname_pattern: Optional[str] = None,
+    ) -> List[HourlyLastRow]:
         cfg = self._config
-        tag_filter = self._tag_filter(tags)
+        tag_filter = self._tag_filter(tags or [])
+        tbname_filter = f"AND tbname LIKE '{tbname_pattern}' " if tbname_pattern else ""
         sql = (
             f"SELECT _wstart, LAST(`val`) AS last_val, tagname "
             f"FROM `{cfg.database}`.`{cfg.table}` "
             f"WHERE ts >= '{self._ts(start)}' AND ts <= '{self._ts(end)}' "
-            f"{tag_filter}"
+            f"{tag_filter}{tbname_filter}"
             f"PARTITION BY tbname INTERVAL(1h) ORDER BY _wstart"
         )
         log.info("Consultando TDengine (LAST): %s", sql)

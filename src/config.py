@@ -106,6 +106,8 @@ class AppConfig:
     sqlserver: SqlServerConfig
     groups_state_file: str
     run_once: bool
+    sync_on_startup: bool
+    dry_run: bool
     log_level: str
     heartbeat_file: str
     heartbeat_max_age_seconds: int
@@ -190,6 +192,8 @@ def load_config() -> AppConfig:
         sqlserver=sqlserver,
         groups_state_file=_optional("GROUPS_STATE_FILE", "/app/state/groups.json"),
         run_once=_optional_bool("RUN_ONCE", False),
+        sync_on_startup=_optional_bool("SYNC_ON_STARTUP", True),
+        dry_run=_optional_bool("DRY_RUN", False),
         log_level=_optional("LOG_LEVEL", "INFO"),
         heartbeat_file=_optional("HEARTBEAT_FILE", "/app/state/heartbeat"),
         heartbeat_max_age_seconds=_optional_int("HEARTBEAT_MAX_AGE_SECONDS", 900),

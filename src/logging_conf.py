@@ -25,3 +25,6 @@ def setup_logging(level: str, extra_handler: Optional[logging.Handler] = None) -
     # no un log de acceso por cada petición del panel (polling cada pocos segundos).
     logging.getLogger("waitress").setLevel(logging.WARNING)
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
+    # Al recibir SIGTERM, el trigger de Waitress se cierra antes de que los hilos worker
+    # terminen sus requests en curso, produciendo un OSError EBADF inofensivo. Se suprime.
+    logging.getLogger("waitress.trigger").setLevel(logging.CRITICAL)

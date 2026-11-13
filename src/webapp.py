@@ -60,7 +60,9 @@ def _ser_group(group: GroupConfig, tracker: RunTracker) -> dict:
         "name": group.name,
         "agg_type": group.agg_type,
         "target_table": group.target_table,
+        "tags": group.tags,
         "tags_count": len(group.tags),
+        "tbname_pattern": group.tbname_pattern,
         "enabled": group.enabled,
         "is_running": tracker.is_running(group.id),
         "schedule": group.schedule.to_dict(),
@@ -236,6 +238,7 @@ def create_app(
                 agg_type=str(data.get("agg_type", "twa")),
                 target_table=str(data.get("target_table", "")).strip(),
                 tags=[t.strip() for t in str(data.get("tags_text", "")).splitlines() if t.strip()],
+                tbname_pattern=str(data.get("tbname_pattern") or "").strip() or None,
                 schedule=ScheduleConfig.from_dict(data.get("schedule", {})),
                 date_range=DateRangeConfig(
                     mode=data.get("date_range", {}).get("mode", "shift_yesterday"),
@@ -269,12 +272,15 @@ def create_app(
         try:
             tags_text = data.get("tags_text")
             tags = [t.strip() for t in str(tags_text).splitlines() if t.strip()] if tags_text is not None else g.tags
+            tbname_raw = data.get("tbname_pattern")
+            tbname_pattern = str(tbname_raw or "").strip() or None if tbname_raw is not None else g.tbname_pattern
             updated = GroupConfig(
                 id=g.id,
                 name=str(data.get("name", g.name)).strip(),
                 agg_type=str(data.get("agg_type", g.agg_type)),
                 target_table=str(data.get("target_table", g.target_table)).strip(),
                 tags=tags,
+                tbname_pattern=tbname_pattern,
                 schedule=ScheduleConfig.from_dict(data.get("schedule", g.schedule.to_dict())),
                 date_range=DateRangeConfig(
                     mode=data.get("date_range", {}).get("mode", g.date_range.mode),
@@ -897,7 +903,7 @@ GROUPS_HTML = """<!doctype html>
       <div class="form-field"><label>Nombre del grupo</label>
         <input id="f-name" placeholder="Ej: Tags TWA Molino 1"></div>
       <div class="form-field"><label>Tipo de agregación</label>
-        <select id="f-agg">
+        <select id="f-agg" onchange="toggleTbnameField()">
           <option value="twa">TWA – Media ponderada en el tiempo</option>
           <option value="last">LAST – Último valor registrado (horometros)</option>
         </select></div>
@@ -914,6 +920,11 @@ GROUPS_HTML = """<!doctype html>
   </div>
 
   <div id="sp-tags" class="sub-panel">
+    <div id="f-tbname-wrap" class="form-field" style="display:none">
+      <label>Patrón tbname (descubrimiento automático de tags)</label>
+      <input id="f-tbname" placeholder="%Horometro%">
+      <div style="font-size:11px;color:var(--dim);margin-top:5px">Si se define, los tags se descubren dinámicamente en cada ciclo consultando TDengine con <code>WHERE tbname LIKE \'patrón\'</code>. El listado manual de abajo se ignora.</div>
+    </div>
     <div class="form-field">
       <label>Tags (uno por línea)</label>
       <textarea id="f-tags" rows="14" style="font-family:var(--mono);font-size:12.5px;line-height:1.6" placeholder="TAG1&#10;TAG2&#10;TAG3" oninput="updateTagCount()"></textarea>
@@ -955,7 +966,8 @@ GROUPS_HTML = """<!doctype html>
     <div class="form-field" style="max-width:380px">
       <label>Modo de ventana temporal</label>
       <select id="f-dr-mode" onchange="onDrMode()">
-        <option value="shift_yesterday">Ventana diaria (hoy −15h → +9h desde medianoche)</option>
+        <option value="shift_yesterday">Ventana diaria (medianoche −15h → hora actual)</option>
+        <option value="all_time">Histórico completo (2020-01-01 → hora actual) — horómetros</option>
         <option value="turno_diario">Turno diario (ayer 21:00 → hoy 21:00, hora de Madrid)</option>
         <option value="shift_date">Turno de fecha concreta</option>
         <option value="range">Rango libre (UTC)</option>
@@ -989,6 +1001,7 @@ GROUPS_HTML = """<!doctype html>
 </main>
 <script>
 let editId=null,allGroups=[];
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function showTab(name){
   document.querySelectorAll('.sub-tab').forEach(t=>t.classList.toggle('active',t.dataset.panel===name));
   document.querySelectorAll('.sub-panel').forEach(p=>p.classList.toggle('active',p.id==='sp-'+name));
@@ -1006,6 +1019,14 @@ function updateTagCount(){
   const n=document.getElementById('f-tags').value.split('\\n').filter(l=>l.trim()).length;
   document.getElementById('tag-count').textContent=n.toLocaleString()+' tag'+(n!==1?'s':'');
 }
+function toggleTbnameField(){
+  const isLast=document.getElementById('f-agg').value==='last';
+  document.getElementById('f-tbname-wrap').style.display=isLast?'':'none';
+}
+function openEditorById(id){
+  const g=allGroups.find(x=>x.id===id);
+  if(g)openEditor(g);
+}
 function openEditor(g){
   editId=g?g.id:null;
   document.getElementById('editor-title').textContent=g?'Editar: '+g.name:'Nuevo grupo';
@@ -1014,7 +1035,8 @@ function openEditor(g){
   document.getElementById('f-table').value=g?g.target_table:'';
   document.getElementById('f-enabled').checked=g?g.enabled:true;
   document.getElementById('f-tags').value=g?(g.tags||[]).join('\\n'):'';
-  updateTagCount();
+  document.getElementById('f-tbname').value=g?(g.tbname_pattern||''):'';
+  updateTagCount();toggleTbnameField();
   const sc=g?g.schedule:{mode:'interval',interval_minutes:5,times:['06:00'],cron:'*/5 * * * *'};
   document.getElementById('f-sched-mode').value=sc.mode||'interval';
   document.getElementById('f-interval').value=sc.interval_minutes||5;
@@ -1045,6 +1067,7 @@ async function saveGroup(){
     target_table:document.getElementById('f-table').value.trim(),
     enabled:document.getElementById('f-enabled').checked,
     tags_text:document.getElementById('f-tags').value,
+    tbname_pattern:document.getElementById('f-tbname').value.trim()||null,
     schedule:{mode,interval_minutes:parseInt(document.getElementById('f-interval').value)||5,times,cron:document.getElementById('f-cron').value},
     date_range:{
       mode:document.getElementById('f-dr-mode').value,
@@ -1080,23 +1103,24 @@ function renderList(groups){
   }
   el.innerHTML=groups.map(g=>{
     const last=g.last_run;
-    const statusStr=last?(last.status==='ok'?`<span class="ok">● OK · ${last.rows_written.toLocaleString()} filas</span>`:`<span class="err">● ${last.error_category||'Error'}</span>`):'<span class="dim">Sin ejecuciones</span>';
+    const statusStr=last?(last.status==='ok'?`<span class="ok">● OK · ${last.rows_written.toLocaleString()} filas</span>`:`<span class="err">● ${esc(last.error_category||'Error')}</span>`):'<span class="dim">Sin ejecuciones</span>';
+    const dot=g.is_running?'s-run':!g.enabled?'s-off':!last?'s-off':last.status==='ok'?'s-ok':'s-err';
     return `<div class="group-row">
-      <div class="status-dot ${g.is_running?'s-run':g.enabled?(last?.status==='ok'?'s-ok':'s-err'):'s-off'}"></div>
+      <div class="status-dot ${dot}"></div>
       <div class="group-row-info ellipsis">
-        <div class="group-row-name">${g.name} <span class="badge badge-${g.agg_type}">${g.agg_type}</span></div>
-        <div class="group-row-meta">${g.target_table} · ${g.tags_count} tags · ${statusStr}</div>
-        <div class="group-row-sched">${g.schedule_description}</div>
+        <div class="group-row-name">${esc(g.name)} <span class="badge badge-${g.agg_type}">${g.agg_type}</span></div>
+        <div class="group-row-meta">${esc(g.target_table)} · ${g.tags_count} tags · ${statusStr}</div>
+        <div class="group-row-sched">${esc(g.schedule_description)}</div>
       </div>
       <label class="toggle-wrap" title="${g.enabled?'Deshabilitar':'Habilitar'}">
         <input type="checkbox" ${g.enabled?'checked':''} onchange="toggleGroup('${g.id}',this.checked)">
         <span class="toggle-track"></span>
       </label>
-      <button class="btn btn-ghost btn-sm" onclick='openEditor(${JSON.stringify(g)})'>
+      <button class="btn btn-ghost btn-sm" onclick="openEditorById('${g.id}')">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         Editar
       </button>
-      <button class="btn btn-danger btn-sm" onclick="deleteGroup('${g.id}','${g.name.replace(/'/g,"\\\\'")}')">
+      <button class="btn btn-danger btn-sm" data-gid="${g.id}" data-gname="${esc(g.name)}" onclick="deleteGroup(this.dataset.gid,this.dataset.gname)">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
       </button>
     </div>`;
